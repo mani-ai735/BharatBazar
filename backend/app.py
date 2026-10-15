@@ -9,7 +9,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import create_engine, String, Text, Float, Integer, Boolean, DateTime, ForeignKey, Index, func, select, text
+from sqlalchemy import create_engine, String, Text, Float, Integer, Boolean, DateTime, ForeignKey, Index, func, select, text, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session, relationship
 from pwdlib import PasswordHash
 
@@ -147,7 +147,10 @@ def categories(s:Session=Depends(dbdep)): return sorted(set(s.scalars(select(Lis
 @app.get("/api/v1/products")
 def products(q:str="",category:str="",city:str="",sort:str="recent",featured:bool=False,s:Session=Depends(dbdep),u=Depends(current)):
     stmt=select(Listing).where(Listing.published==True,Listing.status=="approved")
-    if q: stmt=stmt.where(func.lower(Listing.name+" "+Listing.description+" "+Listing.business_name).contains(q.lower()))
+    q=q.strip()
+    if q:
+        pattern="%"+q.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
+        stmt=stmt.where(or_(Listing.name.ilike(pattern,escape="\\"),Listing.description.ilike(pattern,escape="\\"),Listing.business_name.ilike(pattern,escape="\\"),Listing.seller_name.ilike(pattern,escape="\\"),Listing.category.ilike(pattern,escape="\\"),Listing.city.ilike(pattern,escape="\\")))
     if category: stmt=stmt.where(Listing.category==category)
     if city: stmt=stmt.where(func.lower(Listing.city).contains(city.lower()))
     if featured: stmt=stmt.where(Listing.featured==True)

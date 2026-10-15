@@ -1,0 +1,2 @@
+-- The application owns schema creation through SQLAlchemy metadata. This marker versions the initial schema.
+-- Kept as an explicit migration record for deploy auditability.

@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+node_modules/
+frontend/dist/
+backend/__pycache__/
+*.py[cod]
+uploads/
+postgres_data/
+backup.sql

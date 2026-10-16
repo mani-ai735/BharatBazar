@@ -6,3 +6,5 @@ PyJWT==2.10.1
 pwdlib[argon2]==0.2.1
 python-multipart==0.0.20
 pydantic[email]==2.10.6
+google-auth[requests]==2.62.0
+Pillow==12.3.0

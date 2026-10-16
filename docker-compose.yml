@@ -20,11 +20,13 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-720}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8081}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8081}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?Set SEED_ADMIN_PASSWORD in .env}
       SUPPORT_WHATSAPP: ${SUPPORT_WHATSAPP:-YOUR_WHATSAPP_NUMBER}
       SUPPORT_EMAIL: ${SUPPORT_EMAIL:-YOUR_SUPPORT_EMAIL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -43,7 +45,7 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api/v1}
+        VITE_API_URL: ${VITE_API_URL:-/api/v1}
     restart: unless-stopped
     ports: ["8081:80"]
     depends_on:

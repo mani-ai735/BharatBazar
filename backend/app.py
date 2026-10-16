@@ -1,10 +1,15 @@
 import os, re, uuid, logging, secrets, time
 import hashlib, smtplib
+from io import BytesIO
 from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 from typing import Optional
 import jwt
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2 import id_token as google_id_token
+from PIL import Image, UnidentifiedImageError
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,17 +19,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker,
 from pwdlib import PasswordHash
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s"}')
-log=logging.getLogger("bazaar")
+log=logging.getLogger("khetx")
 DB=os.getenv("DATABASE_URL","postgresql+psycopg://bazaar:bazaar@localhost:5432/bharat_bazaar")
 engine=create_engine(DB,pool_pre_ping=True)
 SessionLocal=sessionmaker(bind=engine,expire_on_commit=False)
 class Base(DeclarativeBase): pass
 class User(Base):
     __tablename__="users"
-    id:Mapped[int]=mapped_column(primary_key=True); email:Mapped[str]=mapped_column(String(254),unique=True,index=True); name:Mapped[str]=mapped_column(String(120)); phone:Mapped[str]=mapped_column(String(24),default=""); password_hash:Mapped[str]=mapped_column(String(255)); role:Mapped[str]=mapped_column(String(16),default="buyer"); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    id:Mapped[int]=mapped_column(primary_key=True); email:Mapped[str]=mapped_column(String(254),unique=True,index=True); name:Mapped[str]=mapped_column(String(120)); phone:Mapped[str]=mapped_column(String(24),default=""); password_hash:Mapped[str]=mapped_column(String(255)); role:Mapped[str]=mapped_column(String(16),default="buyer"); google_sub:Mapped[Optional[str]]=mapped_column(String(255),nullable=True); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
 class Listing(Base):
     __tablename__="listings"
-    id:Mapped[int]=mapped_column(primary_key=True); owner_id:Mapped[int]=mapped_column(ForeignKey("users.id"),index=True); seller_name:Mapped[str]=mapped_column(String(120)); business_name:Mapped[str]=mapped_column(String(160)); address:Mapped[str]=mapped_column(String(300)); city:Mapped[str]=mapped_column(String(120),index=True); phone:Mapped[str]=mapped_column(String(24)); whatsapp:Mapped[str]=mapped_column(String(24)); name:Mapped[str]=mapped_column(String(180),index=True); category:Mapped[str]=mapped_column(String(100),index=True); description:Mapped[str]=mapped_column(Text); image:Mapped[str]=mapped_column(String(500),default=""); price:Mapped[Optional[float]]=mapped_column(Float,nullable=True); price_label:Mapped[str]=mapped_column(String(100),default=""); moq:Mapped[int]=mapped_column(Integer); unit:Mapped[str]=mapped_column(String(40)); quantity:Mapped[str]=mapped_column(String(80)); lat:Mapped[Optional[float]]=mapped_column(Float,nullable=True); lon:Mapped[Optional[float]]=mapped_column(Float,nullable=True); status:Mapped[str]=mapped_column(String(24),default="pending",index=True); published:Mapped[bool]=mapped_column(Boolean,default=False,index=True); featured:Mapped[bool]=mapped_column(Boolean,default=False); note:Mapped[str]=mapped_column(Text,default=""); reviewer_id:Mapped[Optional[int]]=mapped_column(ForeignKey("users.id"),nullable=True); reviewed_at:Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True),nullable=True); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    id:Mapped[int]=mapped_column(primary_key=True); owner_id:Mapped[int]=mapped_column(ForeignKey("users.id"),index=True); seller_name:Mapped[str]=mapped_column(String(120)); business_name:Mapped[str]=mapped_column(String(160)); address:Mapped[str]=mapped_column(String(300)); city:Mapped[str]=mapped_column(String(120),index=True); pincode:Mapped[str]=mapped_column(String(10),default=""); phone:Mapped[str]=mapped_column(String(24)); whatsapp:Mapped[str]=mapped_column(String(24)); name:Mapped[str]=mapped_column(String(180),index=True); category:Mapped[str]=mapped_column(String(100),index=True); description:Mapped[str]=mapped_column(Text,default=""); image:Mapped[str]=mapped_column(String(500),default=""); price:Mapped[Optional[float]]=mapped_column(Float,nullable=True); price_label:Mapped[str]=mapped_column(String(100),default=""); moq:Mapped[int]=mapped_column(Integer); unit:Mapped[str]=mapped_column(String(40)); quantity:Mapped[str]=mapped_column(String(80)); lat:Mapped[Optional[float]]=mapped_column(Float,nullable=True); lon:Mapped[Optional[float]]=mapped_column(Float,nullable=True); status:Mapped[str]=mapped_column(String(24),default="pending",index=True); published:Mapped[bool]=mapped_column(Boolean,default=False,index=True); featured:Mapped[bool]=mapped_column(Boolean,default=False); note:Mapped[str]=mapped_column(Text,default=""); reviewer_id:Mapped[Optional[int]]=mapped_column(ForeignKey("users.id"),nullable=True); reviewed_at:Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True),nullable=True); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
     __table_args__=(Index("ix_public_listings","status","published"),)
 class Review(Base):
     __tablename__="reviews"
@@ -41,11 +46,23 @@ class Report(Base):
 class ResetToken(Base):
     __tablename__="password_reset_tokens"
     id:Mapped[int]=mapped_column(primary_key=True); user_id:Mapped[int]=mapped_column(ForeignKey("users.id"),index=True); token_hash:Mapped[str]=mapped_column(String(64),unique=True); expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True)); used:Mapped[bool]=mapped_column(Boolean,default=False)
+class DeviceSeen(Base):
+    __tablename__="device_seen"
+    id:Mapped[int]=mapped_column(primary_key=True); device_hash:Mapped[str]=mapped_column(String(64),unique=True,index=True); first_user_id:Mapped[int]=mapped_column(ForeignKey("users.id")); first_seen:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc)); last_seen:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
 
 Base.metadata.create_all(engine)
+with engine.begin() as _migration_conn:
+    _migration_conn.execute(text("ALTER TABLE listings ADD COLUMN IF NOT EXISTS pincode VARCHAR(10) NOT NULL DEFAULT ''"))
+    _migration_conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255)"))
+    _migration_conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub) WHERE google_sub IS NOT NULL"))
+    _migration_conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_phone_nonempty ON users (phone) WHERE phone <> ''"))
 with SessionLocal() as _migration_session:
     if not _migration_session.get(SchemaMigration,"001_initial"):
         _migration_session.add(SchemaMigration(version="001_initial")); _migration_session.commit()
+    if not _migration_session.get(SchemaMigration,"002_listing_pincode"):
+        _migration_session.add(SchemaMigration(version="002_listing_pincode")); _migration_session.commit()
+    if not _migration_session.get(SchemaMigration,"003_unique_phone_device_count"):
+        _migration_session.add(SchemaMigration(version="003_unique_phone_device_count")); _migration_session.commit()
 ph=PasswordHash.recommended()
 def dbdep():
     s=SessionLocal()
@@ -64,7 +81,7 @@ def seed():
             s.commit()
 seed()
 
-app=FastAPI(title="Bharat Bazaar API",version="1.0.0",openapi_url="/api/v1/openapi.json",docs_url="/docs")
+app=FastAPI(title="KhetX API",version="1.0.0",openapi_url="/api/v1/openapi.json",docs_url="/docs")
 origins=os.getenv("CORS_ORIGINS","http://localhost:8080").split(",")
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 Path("/app/uploads").mkdir(exist_ok=True)
@@ -85,15 +102,25 @@ def current(req:Request,s:Session=Depends(dbdep)):
     u=s.get(User,uid)
     if not u: raise HTTPException(401,"Account unavailable")
     return u
+def optional_current(req:Request,s:Session=Depends(dbdep)):
+    raw=req.headers.get("Authorization","").removeprefix("Bearer ")
+    if not raw: return None
+    try: uid=int(jwt.decode(raw,os.getenv("JWT_SECRET","development-secret-change-this-please"),algorithms=["HS256"])["sub"])
+    except Exception: raise HTTPException(401,"Invalid or expired session")
+    u=s.get(User,uid)
+    if not u: raise HTTPException(401,"Account unavailable")
+    return u
 def admin(u=Depends(current)):
     if u.role!="admin": raise HTTPException(403,"Admin access required")
     return u
-def public_listing(l): return {"id":l.id,"seller_id":l.owner_id,"seller_name":l.business_name or l.seller_name,"contact_name":l.seller_name,"address":l.address,"city":l.city,"phone":l.phone,"whatsapp":l.whatsapp,"name":l.name,"category":l.category,"description":l.description,"image":l.image,"price":l.price,"price_label":l.price_label,"moq":l.moq,"unit":l.unit,"quantity":l.quantity,"lat":l.lat,"lon":l.lon,"featured":l.featured,"created_at":l.created_at.isoformat()}
+def public_listing(l): return {"id":l.id,"seller_id":l.owner_id,"seller_name":l.business_name or l.seller_name,"contact_name":l.seller_name,"address":l.address,"city":l.city,"pincode":l.pincode,"phone":l.phone,"whatsapp":l.whatsapp,"name":l.name,"category":l.category,"description":l.description,"image":l.image,"price":l.price,"price_label":l.price_label,"moq":l.moq,"unit":l.unit,"quantity":l.quantity,"lat":l.lat,"lon":l.lon,"featured":l.featured,"created_at":l.created_at.isoformat()}
 class Auth(BaseModel): email:EmailStr; password:str=Field(min_length=8,max_length=128)
+class GoogleAuth(BaseModel): credential:str=Field(min_length=20,max_length=5000)
 class Register(Auth): name:str=Field(min_length=2,max_length=120); phone:str=Field(min_length=7,max_length=24)
 class ReviewIn(BaseModel): rating:int=Field(ge=1,le=5); body:str=Field(min_length=8,max_length=1200)
 class StatusIn(BaseModel): status:str; note:str=""
-class ListingIn(BaseModel): seller_name:str; business_name:str=""; address:str; city:str; phone:str; whatsapp:str; name:str; category:str; description:str; image:str=""; price:Optional[float]=None; price_label:str=""; moq:int=Field(ge=1); unit:str; quantity:str; lat:Optional[float]=None; lon:Optional[float]=None
+class BulkListingAction(BaseModel): listing_ids:list[int]=Field(min_length=1,max_length=100); action:str; note:str=""
+class ListingIn(BaseModel): seller_name:str=Field(min_length=2,max_length=120); business_name:str=""; address:str; city:str; pincode:str=Field(pattern=r"^[0-9]{6}$"); phone:str; whatsapp:str; name:str; category:str; description:str=""; image:str=""; price:Optional[float]=None; price_label:str=""; moq:int=Field(ge=1); unit:str; quantity:str; lat:Optional[float]=None; lon:Optional[float]=None
 def phoneok(x): return re.sub(r"\D","",x)
 @app.get("/api/v1/health/live")
 def live(): return {"status":"ok"}
@@ -105,16 +132,57 @@ def ready():
 def register(data:Register,s:Session=Depends(dbdep)):
     email=data.email.lower()
     if s.scalar(select(User).where(User.email==email)): raise HTTPException(409,"Email already registered")
-    if len(phoneok(data.phone))<7: raise HTTPException(422,"Enter a valid phone number")
-    u=User(email=email,name=data.name,phone=phoneok(data.phone),password_hash=ph.hash(data.password),role="buyer"); s.add(u); s.commit(); s.refresh(u)
+    phone=phoneok(data.phone)
+    if len(phone)<7: raise HTTPException(422,"Enter a valid phone number")
+    if s.scalar(select(User).where(User.phone==phone)): raise HTTPException(409,"Phone number already registered")
+    u=User(email=email,name=data.name,phone=phone,password_hash=ph.hash(data.password),role="buyer"); s.add(u)
+    try: s.commit()
+    except Exception:
+        s.rollback(); raise HTTPException(409,"Email or phone number already registered")
+    s.refresh(u)
     return {"token":tok(u),"user":{"id":u.id,"email":u.email,"name":u.name,"role":u.role}}
 @app.post("/api/v1/auth/login")
 def login(data:Auth,s:Session=Depends(dbdep)):
     u=s.scalar(select(User).where(User.email==data.email.lower()))
     if not u or not ph.verify(data.password,u.password_hash): raise HTTPException(401,"Email or password is incorrect")
     return {"token":tok(u),"user":{"id":u.id,"email":u.email,"name":u.name,"role":u.role}}
+@app.post("/api/v1/auth/google")
+def google_login(data:GoogleAuth,req:Request,s:Session=Depends(dbdep)):
+    client_id=os.getenv("GOOGLE_CLIENT_ID","").strip()
+    if not client_id: raise HTTPException(503,"Google sign-in is not configured yet")
+    if req.headers.get("X-Requested-With")!="XMLHttpRequest": raise HTTPException(400,"Invalid sign-in request")
+    try: claims=google_id_token.verify_oauth2_token(data.credential,GoogleRequest(),client_id)
+    except Exception: raise HTTPException(401,"Google sign-in could not be verified. Please try again.")
+    email=str(claims.get("email","")).strip().lower()
+    if not email or claims.get("email_verified") is not True: raise HTTPException(401,"Google must verify your email address")
+    # Trust automatic email linking only for Gmail or a verified Google Workspace domain.
+    if not (email.endswith("@gmail.com") or claims.get("hd")): raise HTTPException(401,"Use a Gmail or Google Workspace account for Google sign-in")
+    subject=str(claims.get("sub", ""))
+    if not subject: raise HTTPException(401,"Google account identifier is missing")
+    u=s.scalar(select(User).where(User.google_sub==subject))
+    if not u:
+        u=s.scalar(select(User).where(User.email==email))
+        if u:
+            if u.google_sub and u.google_sub!=subject: raise HTTPException(409,"This account is linked to a different Google identity")
+            u.google_sub=subject
+        else:
+            u=User(email=email,name=str(claims.get("name") or email.split("@",1)[0])[:120],phone="",password_hash=ph.hash(secrets.token_urlsafe(48)),role="buyer",google_sub=subject)
+            s.add(u)
+    try: s.commit()
+    except Exception:
+        s.rollback(); raise HTTPException(409,"Could not create or link this Google account")
+    return {"token":tok(u),"user":{"id":u.id,"email":u.email,"name":u.name,"role":u.role}}
 @app.get("/api/v1/auth/me")
 def me(u=Depends(current)): return {"id":u.id,"email":u.email,"name":u.name,"role":u.role}
+@app.post("/api/v1/auth/device")
+def record_device(data:dict,u=Depends(current),s:Session=Depends(dbdep)):
+    raw=str(data.get("device_id", ""))
+    try: device_id=str(uuid.UUID(raw))
+    except ValueError: raise HTTPException(422,"Invalid device identifier")
+    hashed=hashlib.sha256(device_id.encode()).hexdigest(); seen=s.scalar(select(DeviceSeen).where(DeviceSeen.device_hash==hashed)); now=datetime.now(timezone.utc)
+    if seen: seen.last_seen=now
+    else: s.add(DeviceSeen(device_hash=hashed,first_user_id=u.id,first_seen=now,last_seen=now))
+    s.commit(); return {"recorded":True}
 @app.post("/api/v1/auth/password-reset")
 def reset(data:dict,s:Session=Depends(dbdep)):
     u=s.scalar(select(User).where(User.email==str(data.get("email","")).lower()))
@@ -123,14 +191,18 @@ def reset(data:dict,s:Session=Depends(dbdep)):
         token=secrets.token_urlsafe(36); digest=hashlib.sha256(token.encode()).hexdigest()
         s.add(ResetToken(user_id=u.id,token_hash=digest,expires_at=datetime.now(timezone.utc)+timedelta(minutes=30))); s.commit()
         host=os.getenv("SMTP_HOST")
+        reset_url=f"{os.getenv('PUBLIC_APP_URL','http://localhost:8081').rstrip('/')}/?reset_token={quote(token,safe='')}"
         if host:
-            message=EmailMessage(); message["Subject"]="Reset your Bharat Bazaar password"; message["From"]=os.getenv("SMTP_FROM","no-reply@bharatbazaar.local"); message["To"]=u.email
-            message.set_content(f"Reset your password with this one-time token: {token}\nIt expires in 30 minutes.")
-            with smtplib.SMTP(host,int(os.getenv("SMTP_PORT","587")),timeout=10) as smtp:
-                if os.getenv("SMTP_STARTTLS","true").lower()=="true": smtp.starttls()
-                if os.getenv("SMTP_USER"): smtp.login(os.getenv("SMTP_USER"),os.getenv("SMTP_PASSWORD",""))
-                smtp.send_message(message)
-        else: log.warning("Development password reset token for %s: %s",u.email,token)
+            message=EmailMessage(); message["Subject"]="Reset your KhetX password"; message["From"]=os.getenv("SMTP_FROM","no-reply@khetx.local"); message["To"]=u.email
+            message.set_content(f"We received a request to reset your KhetX password.\n\nOpen this link to choose a new password (valid for 30 minutes):\n{reset_url}\n\nIf you did not request this, you can ignore this email.")
+            try:
+                with smtplib.SMTP(host,int(os.getenv("SMTP_PORT","587")),timeout=10) as smtp:
+                    if os.getenv("SMTP_STARTTLS","true").lower()=="true": smtp.starttls()
+                    if os.getenv("SMTP_USER"): smtp.login(os.getenv("SMTP_USER"),os.getenv("SMTP_PASSWORD",""))
+                    smtp.send_message(message)
+            except Exception:
+                log.exception("Unable to send password reset email")
+        else: log.warning("Development password reset link for %s: %s",u.email,reset_url)
     return {"message":"If the account exists, password reset instructions will be sent."}
 @app.post("/api/v1/auth/password-reset/confirm")
 def reset_confirm(data:dict,s:Session=Depends(dbdep)):
@@ -141,11 +213,11 @@ def reset_confirm(data:dict,s:Session=Depends(dbdep)):
     u=s.get(User,rec.user_id); u.password_hash=ph.hash(password); rec.used=True; s.commit()
     return {"message":"Password updated. You can now log in."}
 @app.get("/api/v1/config")
-def config(): return {"support_whatsapp":os.getenv("SUPPORT_WHATSAPP","YOUR_WHATSAPP_NUMBER"),"support_email":os.getenv("SUPPORT_EMAIL","YOUR_SUPPORT_EMAIL")}
+def config(): return {"support_whatsapp":os.getenv("SUPPORT_WHATSAPP","YOUR_WHATSAPP_NUMBER"),"support_email":os.getenv("SUPPORT_EMAIL","YOUR_SUPPORT_EMAIL"),"google_client_id":os.getenv("GOOGLE_CLIENT_ID","").strip()}
 @app.get("/api/v1/categories")
 def categories(s:Session=Depends(dbdep)): return sorted(set(s.scalars(select(Listing.category).where(Listing.published==True,Listing.status=="approved")).all()))
 @app.get("/api/v1/products")
-def products(q:str="",category:str="",city:str="",sort:str="recent",featured:bool=False,s:Session=Depends(dbdep),u=Depends(current)):
+def products(q:str="",category:str="",city:str="",sort:str="recent",featured:bool=False,s:Session=Depends(dbdep),u=Depends(optional_current)):
     stmt=select(Listing).where(Listing.published==True,Listing.status=="approved")
     q=q.strip()
     if q:
@@ -154,12 +226,26 @@ def products(q:str="",category:str="",city:str="",sort:str="recent",featured:boo
     if category: stmt=stmt.where(Listing.category==category)
     if city: stmt=stmt.where(func.lower(Listing.city).contains(city.lower()))
     if featured: stmt=stmt.where(Listing.featured==True)
-    if sort=="price": stmt=stmt.order_by(Listing.price.asc().nulls_last())
-    else: stmt=stmt.order_by(Listing.created_at.desc())
-    result=[public_listing(x) for x in s.scalars(stmt.limit(100)).all()]
+    if sort in ("price", "price_asc"): stmt=stmt.order_by(Listing.featured.desc(),Listing.price.asc().nulls_last(),Listing.created_at.desc())
+    elif sort=="price_desc": stmt=stmt.order_by(Listing.featured.desc(),Listing.price.desc().nulls_last(),Listing.created_at.desc())
+    else: stmt=stmt.order_by(Listing.featured.desc(),Listing.created_at.desc())
+    matches=s.scalars(stmt.limit(100)).all()
+    # A text search also promotes featured products from categories represented in
+    # the matches, so a search for one vegetable can surface another featured one.
+    related_categories={x.category for x in matches}
+    if category: related_categories.add(category)
+    related=[]
+    if q and not featured and related_categories:
+        featured_stmt=select(Listing).where(Listing.published==True,Listing.status=="approved",Listing.featured==True,Listing.category.in_(related_categories))
+        if city: featured_stmt=featured_stmt.where(func.lower(Listing.city).contains(city.lower()))
+        related=s.scalars(featured_stmt.order_by(Listing.created_at.desc()).limit(100)).all()
+    rows=related+[x for x in matches if x.id not in {r.id for r in related}]
+    result=[public_listing(x) for x in rows[:100]]
     # Public seller scores: only visible buyer-submitted reviews; no buyer coordinates are retained.
     for p in result:
         vals=s.execute(select(func.avg(Review.rating),func.count(Review.id)).where(Review.seller_id==p["seller_id"],Review.status=="visible")).one(); p["rating"]=round(float(vals[0] or 0),1); p["review_count"]=vals[1]
+        if not u:
+            for field in ("phone","whatsapp","address","pincode"): p.pop(field,None)
     return result
 @app.get("/api/v1/products/{pid}")
 def product(pid:int,s:Session=Depends(dbdep),u=Depends(current)):
@@ -175,13 +261,22 @@ def seller(sid:int,s:Session=Depends(dbdep),u=Depends(current)):
     if not ls: raise HTTPException(404,"Seller not found")
     first=ls[0]; avg,count=s.execute(select(func.avg(Review.rating),func.count(Review.id)).where(Review.seller_id==sid,Review.status=="visible")).one()
     reviews=[{"id":r.id,"rating":r.rating,"body":r.body,"verified":r.verified,"created_at":r.created_at.isoformat()} for r in s.scalars(select(Review).where(Review.seller_id==sid,Review.status=="visible").order_by(Review.created_at.desc()))]
-    return {"id":sid,"name":first.business_name or user.name,"contact_name":first.seller_name,"address":first.address,"city":first.city,"phone":first.phone,"whatsapp":first.whatsapp,"rating":round(float(avg or 0),1),"review_count":count,"reviews":reviews,"products":[public_listing(x) for x in ls]}
+    return {"id":sid,"name":first.business_name or user.name,"contact_name":first.seller_name,"address":first.address,"city":first.city,"pincode":first.pincode,"phone":first.phone,"whatsapp":first.whatsapp,"rating":round(float(avg or 0),1),"review_count":count,"reviews":reviews,"products":[public_listing(x) for x in ls]}
 @app.post("/api/v1/uploads")
 async def upload(file:UploadFile=File(...),u=Depends(current)):
     if file.content_type not in {"image/jpeg","image/png","image/webp"}: raise HTTPException(415,"Upload a JPG, PNG, or WebP image")
     raw=await file.read(5_000_001)
     if len(raw)>5_000_000: raise HTTPException(413,"Image must be 5 MB or smaller")
-    ext={"image/jpeg":"jpg","image/png":"png","image/webp":"webp"}[file.content_type]; name=f"{uuid.uuid4().hex}.{ext}"; Path("/app/uploads",name).write_bytes(raw)
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            if image.format not in {"JPEG","PNG","WEBP"}: raise HTTPException(415,"The uploaded file is not a supported image")
+            image.load()
+            image=image.convert("RGB") if image.mode not in ("RGBA","LA") else image.convert("RGBA")
+            optimized=BytesIO(); image.save(optimized,format="WEBP",quality=78,method=4)
+        raw=optimized.getvalue()
+    except HTTPException: raise
+    except (UnidentifiedImageError,OSError,Image.DecompressionBombError): raise HTTPException(415,"Could not read this image file")
+    name=f"{uuid.uuid4().hex}.webp"; Path("/app/uploads",name).write_bytes(raw)
     return {"url":f"/uploads/{name}"}
 @app.post("/api/v1/submissions")
 def submit(data:ListingIn,u=Depends(current),s:Session=Depends(dbdep)):
@@ -189,7 +284,7 @@ def submit(data:ListingIn,u=Depends(current),s:Session=Depends(dbdep)):
     l=Listing(**data.model_dump(),owner_id=u.id,status="pending",published=False); s.add(l); s.commit(); s.refresh(l); return {"id":l.id,"status":l.status,"message":"Listing request submitted for admin review."}
 @app.get("/api/v1/submissions/mine")
 def mine(u=Depends(current),s:Session=Depends(dbdep)):
-    return [{"id":x.id,"name":x.name,"city":x.city,"status":x.status,"note":x.note,"created_at":x.created_at.isoformat()} for x in s.scalars(select(Listing).where(Listing.owner_id==u.id).order_by(Listing.created_at.desc()))]
+    return [{"id":x.id,"name":x.name,"city":x.city,"category":x.category,"price":x.price,"price_label":x.price_label,"moq":x.moq,"unit":x.unit,"quantity":x.quantity,"status":x.status,"published":x.published,"note":x.note,"created_at":x.created_at.isoformat()} for x in s.scalars(select(Listing).where(Listing.owner_id==u.id).order_by(Listing.created_at.desc()))]
 @app.get("/api/v1/submissions/{lid}")
 def get_submission(lid:int,u=Depends(current),s:Session=Depends(dbdep)):
     l=s.get(Listing,lid)
@@ -199,13 +294,52 @@ def get_submission(lid:int,u=Depends(current),s:Session=Depends(dbdep)):
 def edit_submission(lid:int,data:ListingIn,u=Depends(current),s:Session=Depends(dbdep)):
     l=s.get(Listing,lid)
     if not l or l.owner_id!=u.id: raise HTTPException(404,"Request not found")
-    if l.status!="changes_requested": raise HTTPException(403,"Only requests marked for changes can be edited")
+    if l.status not in ("changes_requested","approved"): raise HTTPException(403,"Only approved listings or requests marked for changes can be edited")
+    if len(phoneok(data.phone))<7 or len(phoneok(data.whatsapp))<7: raise HTTPException(422,"Enter valid phone and WhatsApp numbers")
     for k,v in data.model_dump().items(): setattr(l,k,v)
-    l.status="pending"; l.note=""; l.published=False; s.commit(); return {"status":"pending"}
+    l.status="pending"; l.note=""; l.published=False; l.featured=False; l.reviewer_id=None; l.reviewed_at=None
+    s.add(Audit(actor_id=u.id,action="seller_listing_edited",entity="listing",entity_id=lid,note="Seller updated listing details; admin review required."))
+    s.commit(); return {"status":"pending","published":False,"message":"Changes sent for admin review. The listing is hidden until approved and published again."}
+@app.post("/api/v1/submissions/{lid}/reapply")
+def reapply_submission(lid:int,u=Depends(current),s:Session=Depends(dbdep)):
+    l=s.get(Listing,lid)
+    if not l or l.owner_id!=u.id: raise HTTPException(404,"Request not found")
+    if l.status!="suspended": raise HTTPException(403,"Only suspended products can be submitted for re-review")
+    prior_note=l.note
+    l.status="pending"; l.published=False; l.note=(f"Seller requested re-review. Previous moderation note: {prior_note}" if prior_note else "Seller requested re-review."); l.reviewer_id=None; l.reviewed_at=None
+    s.add(Audit(actor_id=u.id,action="seller_reapplied",entity="listing",entity_id=lid,note="Seller requested re-review of a suspended listing.")); s.commit()
+    return {"status":"pending","message":"Product sent to admin for re-review. It remains unpublished until approved and published."}
 @app.get("/api/v1/admin/overview")
 def overview(u=Depends(admin),s:Session=Depends(dbdep)):
     ls=s.scalars(select(Listing).order_by(Listing.created_at.desc())).all(); rv=s.scalars(select(Review).order_by(Review.created_at.desc())).all(); reports=s.scalars(select(Report).where(Report.status=="open")).all()
-    return {"pending":[{**public_listing(x),"status":x.status,"note":x.note,"owner_id":x.owner_id} for x in ls if x.status in ("pending","changes_requested")],"approved":[{**public_listing(x),"status":x.status,"published":x.published} for x in ls if x.status=="approved"],"rejected":[{**public_listing(x),"status":x.status,"note":x.note} for x in ls if x.status=="rejected"],"suspended":[{**public_listing(x),"status":x.status,"published":x.published} for x in ls if x.status=="suspended"],"reviews":[{"id":x.id,"seller_id":x.seller_id,"rating":x.rating,"body":x.body,"status":x.status} for x in rv],"reports":[{"id":x.id,"review_id":x.review_id,"reason":x.reason} for x in reports]}
+    return {"unique_devices":s.scalar(select(func.count(DeviceSeen.id))) or 0,"pending":[{**public_listing(x),"status":x.status,"note":x.note,"owner_id":x.owner_id} for x in ls if x.status in ("pending","changes_requested")],"approved":[{**public_listing(x),"status":x.status,"published":x.published} for x in ls if x.status=="approved"],"rejected":[{**public_listing(x),"status":x.status,"note":x.note} for x in ls if x.status=="rejected"],"suspended":[{**public_listing(x),"status":x.status,"published":x.published} for x in ls if x.status=="suspended"],"reviews":[{"id":x.id,"seller_id":x.seller_id,"rating":x.rating,"body":x.body,"status":x.status} for x in rv],"reports":[{"id":x.id,"review_id":x.review_id,"reason":x.reason} for x in reports]}
+@app.post("/api/v1/admin/listings/bulk")
+def bulk_listings(data:BulkListingAction,u=Depends(admin),s:Session=Depends(dbdep)):
+    allowed={"approve","approve_feature","suspend","feature","unfeature","unsuspend"}
+    if data.action not in allowed: raise HTTPException(422,"Invalid bulk action")
+    now=datetime.now(timezone.utc); records={x.id:x for x in s.scalars(select(Listing).where(Listing.id.in_(set(data.listing_ids))))}
+    updated=[]; skipped=[]
+    for lid in dict.fromkeys(data.listing_ids):
+        x=records.get(lid)
+        if not x: skipped.append({"id":lid,"reason":"Listing not found"}); continue
+        previous=x.status
+        if data.action in ("approve","approve_feature"):
+            if x.status not in {"pending","changes_requested","rejected"}: skipped.append({"id":lid,"reason":"Only pending, changes-requested, or rejected listings can be approved"}); continue
+            x.status="approved"; x.published=False; x.note=data.note; x.featured=(data.action=="approve_feature"); x.reviewer_id=u.id; x.reviewed_at=now
+        elif data.action=="suspend":
+            if x.status=="suspended": skipped.append({"id":lid,"reason":"Already suspended"}); continue
+            x.status="suspended"; x.published=False; x.note=data.note or "Suspended by admin."; x.reviewer_id=u.id; x.reviewed_at=now
+        elif data.action=="feature":
+            if x.status!="approved": skipped.append({"id":lid,"reason":"Only approved listings can be featured"}); continue
+            x.featured=True
+        elif data.action=="unfeature": x.featured=False
+        elif data.action=="unsuspend":
+            if x.status!="suspended": skipped.append({"id":lid,"reason":"Only suspended listings can be restored"}); continue
+            x.status="approved"; x.published=False; x.note="Unsuspended by admin. Listing remains unpublished until an admin explicitly publishes it."; x.reviewer_id=u.id; x.reviewed_at=now
+        s.add(Audit(actor_id=u.id,action=f"bulk_{data.action}",entity="listing",entity_id=lid,note=f"Bulk action; previous status: {previous}. {data.note}".strip()))
+        updated.append(lid)
+    s.commit()
+    return {"updated":updated,"skipped":skipped}
 @app.put("/api/v1/admin/listings/{lid}")
 def edit_listing(lid:int,data:ListingIn,u=Depends(admin),s:Session=Depends(dbdep)):
     l=s.get(Listing,lid)
@@ -235,6 +369,15 @@ def suspend(lid:int,data:dict,u=Depends(admin),s:Session=Depends(dbdep)):
     if not l: raise HTTPException(404,"Listing not found")
     l.published=False; l.status="suspended"; l.note=str(data.get("note","")); l.reviewer_id=u.id; l.reviewed_at=datetime.now(timezone.utc)
     s.add(Audit(actor_id=u.id,action="suspended",entity="listing",entity_id=lid,note=l.note)); s.commit(); return {"status":l.status,"published":False}
+@app.post("/api/v1/admin/listings/{lid}/unsuspend")
+def unsuspend(lid:int,u=Depends(admin),s:Session=Depends(dbdep)):
+    l=s.get(Listing,lid)
+    if not l: raise HTTPException(404,"Listing not found")
+    if l.status!="suspended": raise HTTPException(409,"Only suspended listings can be restored")
+    previous_note=l.note
+    l.status="approved"; l.published=False; l.note="Unsuspended by admin. Listing remains unpublished until an admin explicitly publishes it."; l.reviewer_id=u.id; l.reviewed_at=datetime.now(timezone.utc)
+    s.add(Audit(actor_id=u.id,action="unsuspended",entity="listing",entity_id=lid,note=previous_note)); s.commit()
+    return {"status":l.status,"published":False,"message":"Listing restored as approved and unpublished. Publish it separately to show it in the marketplace."}
 @app.post("/api/v1/admin/listings/{lid}/feature")
 def feature(lid:int,data:dict,u=Depends(admin),s:Session=Depends(dbdep)):
     l=s.get(Listing,lid)
@@ -259,7 +402,7 @@ def support(data:dict):
     if len(str(data.get("message","")))<10: raise HTTPException(422,"Please include a message")
     host=os.getenv("SMTP_HOST"); recipient=os.getenv("SUPPORT_EMAIL","")
     if host and "@" in recipient:
-        message=EmailMessage(); message["Subject"]="Bharat Bazaar support inquiry"; message["From"]=os.getenv("SMTP_FROM","no-reply@bharatbazaar.local"); message["To"]=recipient
+        message=EmailMessage(); message["Subject"]="KhetX support inquiry"; message["From"]=os.getenv("SMTP_FROM","no-reply@khetx.local"); message["To"]=recipient
         message.set_content(f"From: {str(data.get('name',''))[:120]} <{str(data.get('email',''))[:254]}>\n\n{str(data.get('message',''))[:5000]}")
         with smtplib.SMTP(host,int(os.getenv("SMTP_PORT","587")),timeout=10) as smtp:
             if os.getenv("SMTP_STARTTLS","true").lower()=="true": smtp.starttls()

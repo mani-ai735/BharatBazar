@@ -9,14 +9,14 @@ Requirements: Docker Engine and Docker Compose v2.
 1. Copy `.env.example` to `.env` and replace the development secrets.
 2. Start everything: `docker compose up --build -d`
 3. Open http://localhost:8081. API docs: http://localhost:8000/docs.
-4. Seed data is loaded at startup. Demo admin is `admin@example.com` / `ChangeMe123!` (change `SEED_ADMIN_PASSWORD` before deployment).
+4. Seed marketplace demo listings are loaded at startup. Create an administrator from a server terminal with `docker compose exec api python provision_admin.py`; the command prompts for the admin identity and password and never prints or stores the password in frontend configuration.
 5. Stop: `docker compose down`. Keep the database volume with this command.
 
-The API runs migrations and seeds idempotently at startup. Readiness: `GET /api/v1/health/ready`; liveness: `GET /api/v1/health/live`.
+The API applies its schema idempotently and seeds demo listings at startup. Admins sign in only at `/admin/login`; first sign-in enrolls Google Authenticator-compatible TOTP, and every later sign-in requires the current six-digit code. Admin TOTP secrets are encrypted in the database using a key derived from `JWT_SECRET`; keep that secret stable or admins will need to re-enroll. Admin sessions use an HttpOnly, Secure, SameSite=Lax cookie and expire after 30 minutes of inactivity. Set `ADMIN_COOKIE_SECURE=false` only for local HTTP development if the browser does not accept localhost Secure cookies. To reset a locked-out administrator authenticator from the server shell, run `docker compose exec api python reset_admin_2fa.py`; it requires the admin email and an explicit confirmation. Readiness: `GET /api/v1/health/ready`; liveness: `GET /api/v1/health/live`.
 
 ## Production deployment
 
-Set strong random `JWT_SECRET`, `POSTGRES_PASSWORD`, and `SEED_ADMIN_PASSWORD`; set `CORS_ORIGINS` to the public frontend origin and `VITE_API_URL` to the public API URL (build-time). Configure `SUPPORT_WHATSAPP` in international digits only and `SUPPORT_EMAIL`. Run `docker compose up --build -d`. Put a reverse proxy/load balancer in front, route HTTPS to frontend and API, and enable HSTS/TLS there. Keep uploads and database on private persistent storage; restrict `/uploads` to image content. Back up with `docker compose exec -T db pg_dump -U bazaar -d bharat_bazaar > backup.sql`; restore with `Get-Content backup.sql | docker compose exec -T db psql -U bazaar -d bharat_bazaar` (PowerShell). Protect backup files and test restores regularly.
+Set strong random `JWT_SECRET` (at least 32 characters) and `POSTGRES_PASSWORD`; set `CORS_ORIGINS` to the public frontend origin and `VITE_API_URL` to the public API URL (build-time). Keep `ADMIN_COOKIE_SECURE=true` in production. Provision administrators only from the server shell with `docker compose exec api python provision_admin.py`. Configure `SUPPORT_WHATSAPP` in international digits only and `SUPPORT_EMAIL`. Run `docker compose up --build -d`. Put a reverse proxy/load balancer in front, route HTTPS to frontend and API, and enable HSTS/TLS there. Keep uploads and database on private persistent storage; restrict `/uploads` to image content. Back up with `docker compose exec -T db pg_dump -U bazaar -d bharat_bazaar > backup.sql`; restore with `Get-Content backup.sql | docker compose exec -T db psql -U bazaar -d bharat_bazaar` (PowerShell). Protect backup files and test restores regularly.
 
 ## Features
 

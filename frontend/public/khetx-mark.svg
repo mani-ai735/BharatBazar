@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">KhetX</title>
+  <desc id="desc">A deep green K joined with a lime green leaf-shaped X.</desc>
+  <rect x="8" y="8" width="496" height="496" rx="92" fill="#fff" stroke="#e5e9e2" stroke-width="8"/>
+  <path d="M118 105h76v126l115-126h92L264 249l145 158h-96L194 277v130h-76z" fill="#09643f"/>
+  <path d="M325 106h82L199 407h-81l24-47c20-37 44-68 75-94 34-28 72-44 111-69 38-24 61-52 59-83-1-17-8-31-20-43 28 11 45 35 46 62 2 39-26 73-69 100-34 22-75 39-105 61-17 13-31 27-43 43z" fill="#83c83d"/>
+  <path d="M167 359c38-48 80-68 127-94 43-25 78-48 99-82-10 36-42 66-84 92-42 26-93 45-142 84z" fill="#a4d954"/>
+</svg>

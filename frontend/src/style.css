@@ -87,3 +87,6 @@
 .product-code-detail{margin:-5px 0 12px;color:#7b867d;font-size:11px}.product-code-detail b{color:#344238;letter-spacing:.04em}.moq>span:first-child{color:#879187}.moq>span:first-child b{color:#536354}
 
 .moq{flex-wrap:wrap}
+
+.brand-logo{display:block;width:36px;height:36px;object-fit:cover;border:1px solid #e5e9e2;border-radius:12px;flex:none}.brand-logo.large{width:52px;height:52px;border-radius:16px;margin-bottom:24px}.install-logo{display:block;width:36px;height:36px;border-radius:10px;flex:none}
+@media(max-width:640px){.install-logo{width:30px;height:30px}}
